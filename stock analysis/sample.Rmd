@@ -1,0 +1,676 @@
+---
+title: "Stock Trading Strategies based on "
+author: "Karthic Subramanian"
+date: "9/28/2020"
+output: 
+  html_document:
+    df_print: paged
+    code_folding: hide
+---
+# Analysing Stock prices for Amazon, Apple and Netflix
+  
+For this assignment, we will be analyzing the stock price movements of *Amazon(AMZN), Apple(AAPL), and Netflix(NFLX)*. These companies are in varying industries: Social Media and Advertising, Hardware, and Media and Streaming respectively. These are also extensively traded companies, with immense growth over the last decade. These companies will provide ample variety and differences in understanding stock movements through various indicators. However, one drawback is that these are exponentially successful stocks and therefore buy and hold would be an extremely difficult strategy to beat. 
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#Dictionaries needed to work with stock prices
+library(TTR); library(quantmod); library(PerformanceAnalytics); library(dplyr);
+
+#Dictionaries needed to plot graphs
+library(ggplot2); library(gridExtra); library(ggthemes);
+
+#For modeling
+library(corrplot); library(caret); library(rpart); library(xgboost); library(gbm);
+
+#Getting stock data for Amazon, Apple and Netflix
+getSymbols(c("AMZN", "AAPL", "NFLX"))
+
+amazon <- AMZN
+apple <- AAPL
+netflix <- NFLX
+
+#Creating a function to create the variables required for building trading strategies
+dataclean <- function(df){
+  #Calculating the following returns: Open to Close, Open to Open, Open to High, Open to Low,
+  # High to Close, Low to Close, Low to High
+
+  df$op_cl <- OpCl(df)
+  df$op_op <- OpOp(df)
+  df$op_hi <- OpHi(df)
+  df$op_lo <- OpLo(df)
+  df$hi_cl <- HiCl(df)
+  df$lo_cl <- LoCl(df)
+  df$lo_hi <- LoHi(df)
+
+  #Calculating Open to close return percentages over 1day, 7day, 30day periods
+
+  df$p_op_cl_1 <- Delt(Op(df), Cl(df), k = 1)
+  df$p_op_cl_2 <- Delt(Op(df), Cl(df), k = 2)
+  df$p_op_cl_3 <- Delt(Op(df), Cl(df), k = 3)
+
+  #Adding columns with lagged close values
+
+  df$lag_cl_1 <- Lag(Cl(df))
+  df$lag_cl_2 <- Lag(Cl(df), 2)
+  df$lag_cl_3 <- Lag(Cl(df), 3)
+
+  #Move up OpCl by one period
+
+  df$next_op_cl <- Next(OpCl(df))
+
+  return(df)
+}
+
+amazon <- dataclean(amazon)
+apple <- dataclean(apple)
+netflix <- dataclean(netflix)
+
+print("Amazon Stock data:")
+head(amazon);
+
+```
+  
+From the stock prices we calculate a number of features to observe the trends. The following variables were created: 
+ 
+* op_cl: Close price - Open price
+* op_op: Today's Open price - Yesterday's Open price
+* op_hi: Open price - High Price
+* op_lo: Open price - Low Price
+* hi_cl: High Price - Close Price
+* lo_cl: Low Price - Close Price
+* lo_hi: Low Price - High Price
+* p_op_cl_1: Percentage change between open and close price over a 1 month period
+* p_op_cl_2: Percentage change between open and close price over a 2 month period
+* p_op_cl_3: Percentage change between open and close price over a 3 month period
+* lag_cl_1: Close price with 1 day lag
+* lag_cl_2: Close price with 2 day lag
+* lag_cl_3: Close price with 3 day lag
+* next_op_cl: Open price for the next day
+ 
+While we could not identify any obvious, apparent trend in these variables, these are useful inputs in a real-time, supervised model for algorithmic trading. For example, we attempted to predict market entry timing based on 2 and 3 month returns compared with op_cl. While the simple rule was inadequate, it showed promise if included in a more complex model. 
+
+## Working with daily, weekly, monthly and quarterly returns
+
+Next we calculate returns for various time periods for Amazon(blue), Apple(Green), and Netflix(Grey) and compare them with the standard normal distribution curve. As expected the mean is non-zero and excess kurtosis exists.
+ 
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#Calculating weekly, monthly and quarterly returns
+
+amazon_returns <- allReturns(amazon)
+apple_returns <- allReturns(apple)
+netflix_returns <- allReturns(netflix)
+#Let us look at SD and kurtosis for daily, weekly, monthly and quarterly returns
+
+adsd <- sd(amazon_returns$daily, na.rm = TRUE)
+awsd <- sd(amazon_returns$weekly, na.rm = TRUE) 
+amsd <- sd(amazon_returns$monthly, na.rm = TRUE)
+aqsd <- sd(amazon_returns$quarterly, na.rm = TRUE)
+
+adk <- kurtosis(amazon_returns$daily, na.rm = TRUE)
+awk <- kurtosis(amazon_returns$weekly, na.rm = TRUE)
+amk <- kurtosis(amazon_returns$monthly, na.rm = TRUE)
+aqk <- kurtosis(amazon_returns$quarterly, na.rm = TRUE)
+
+apdsd <- sd(apple_returns$daily, na.rm = TRUE)
+apwsd <- sd(apple_returns$weekly, na.rm = TRUE) 
+apmsd <- sd(apple_returns$monthly, na.rm = TRUE)
+apqsd <- sd(apple_returns$quarterly, na.rm = TRUE)
+
+apdk <- kurtosis(apple_returns$daily, na.rm = TRUE)
+apwk <- kurtosis(apple_returns$weekly, na.rm = TRUE)
+apmk <- kurtosis(apple_returns$monthly, na.rm = TRUE)
+apqk <- kurtosis(apple_returns$quarterly, na.rm = TRUE)
+
+ndsd <- sd(netflix_returns$daily, na.rm = TRUE)
+nwsd <- sd(netflix_returns$weekly, na.rm = TRUE) 
+nmsd <- sd(netflix_returns$monthly, na.rm = TRUE)
+nqsd <- sd(netflix_returns$quarterly, na.rm = TRUE)
+
+ndk <- kurtosis(netflix_returns$daily, na.rm = TRUE)
+nwk <- kurtosis(netflix_returns$weekly, na.rm = TRUE)
+nmk <- kurtosis(netflix_returns$monthly, na.rm = TRUE)
+nqk <- kurtosis(netflix_returns$quarterly, na.rm = TRUE)
+
+##AMAZON
+#plots to visually observe comparison with normal curves
+r1 <- ggplot(amazon_returns, aes(x = amazon_returns$daily)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "skyblue", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(amazon_returns$daily, na.rm = TRUE),
+                                         sd = sd(amazon_returns$daily, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Daily Returns") + xlab("")
+
+r2 <- ggplot(amazon_returns, aes(x = amazon_returns$weekly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "skyblue", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(amazon_returns$weekly, na.rm = TRUE),
+                                                        sd = sd(amazon_returns$weekly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Weekly Returns") + xlab("")
+
+r3 <- ggplot(amazon_returns, aes(x = amazon_returns$monthly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "skyblue", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(amazon_returns$monthly, na.rm = TRUE),
+                                                        sd = sd(amazon_returns$monthly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Monthly Returns") + xlab("")
+
+r4 <- ggplot(amazon_returns, aes(x = amazon_returns$quarterly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "skyblue", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(amazon_returns$quarterly, na.rm = TRUE),
+                                                        sd = sd(amazon_returns$quarterly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Quarterly Returns") + xlab("")
+
+grid.arrange(r1, r2, r3, r4, nrow = 2, ncol = 2,
+             heights = c(rep(1000,2)), widths = c(rep(1000,2)), name = "Amazon")
+```
+  
+As expected, Amazon returns across daily, weekly and monthly time-periods have high kurtosis. Outliers are for more extreme, however more outliers lie towards the positive returns side. 
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+##APPLE
+#plots to visually observe comparison with normal curves
+r5 <- ggplot(apple_returns, aes(x = apple_returns$daily)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "lightgreen", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(apple_returns$daily, na.rm = TRUE),
+                                                        sd = sd(apple_returns$daily, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Daily Returns") + xlab("")
+
+r6 <- ggplot(apple_returns, aes(x = apple_returns$weekly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "lightgreen", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(apple_returns$weekly, na.rm = TRUE),
+                                                        sd = sd(apple_returns$weekly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Weekly Returns") + xlab("")
+
+r7 <- ggplot(apple_returns, aes(x = apple_returns$monthly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "lightgreen", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(apple_returns$monthly, na.rm = TRUE),
+                                                        sd = sd(apple_returns$monthly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Monthly Returns") + xlab("")
+
+r8 <- ggplot(apple_returns, aes(x = apple_returns$quarterly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "lightgreen", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(apple_returns$quarterly, na.rm = TRUE),
+                                                        sd = sd(apple_returns$quarterly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Quarterly Returns") + xlab("")
+
+grid.arrange(r5, r6, r7, r8, nrow = 2, ncol = 2,
+             heights = c(rep(1000,2)), widths = c(rep(1000,2)), name = "apple")
+```
+  
+Apple's return curves are similar to amazon, however the outliers are more evenly distributed on both positive and negative ends of the return curve.
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+##NETFLIX
+#plots to visually observe comparison with normal curves
+r11 <- ggplot(netflix_returns, aes(x = netflix_returns$daily)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "grey", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(netflix_returns$daily, na.rm = TRUE),
+                                                        sd = sd(netflix_returns$daily, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Daily Returns") + xlab("")
+
+r12 <- ggplot(netflix_returns, aes(x = netflix_returns$weekly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "grey", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(netflix_returns$weekly, na.rm = TRUE),
+                                                        sd = sd(netflix_returns$weekly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Weekly Returns") + xlab("")
+
+r13 <- ggplot(netflix_returns, aes(x = netflix_returns$monthly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "grey", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(netflix_returns$monthly, na.rm = TRUE),
+                                                        sd = sd(netflix_returns$monthly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Monthly Returns") + xlab("")
+
+r14 <- ggplot(netflix_returns, aes(x = netflix_returns$quarterly)) +
+  geom_histogram(aes(y = ..density..), color = "black", fill = "grey", bins = 50) + 
+  stat_function(fun = dnorm, color = "red", args = list(mean = mean(netflix_returns$quarterly, na.rm = TRUE),
+                                                        sd = sd(netflix_returns$quarterly, na.rm = TRUE))) +
+  theme_minimal() + ggtitle("Quarterly Returns") + xlab("")
+
+grid.arrange(r11, r12, r13, r14, nrow = 2, ncol = 2,
+             heights = c(rep(1000,2)), widths = c(rep(1000,2)), name = "netflix")
+```
+  
+Netflix's returns curves are similar to Amazon's curve. 
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+stock_stat <- data.frame(period = c("Daily", "Weekly", "Monthly", "Quarterly"),
+                         amazon_sd = c(adsd, awsd, amsd, aqsd), amazon_kurtosis = c(adk,awk,amk,aqk),
+                         apple_sd = c(apdsd, apwsd, apmsd, apqsd), apple_kurtosis = c(apdk,apwk,apmk,apqk),
+                         netflix_sd = c(ndsd, nwsd, nmsd, nqsd), netflix_kurtosis = c(ndk,nwk,nmk,nqk))
+stock_stat
+```
+  
+Comparing the standard deviation and kurtosis of all three stocks, we see the following:
+    
+* Apple stock has the least volatility (standard deviation) while Netflix stock has the maximum
+* As we increase the time-period under consideration, the deviation of the outliers from the mean reduce. This shows us that the reversal to means theory has some merit to it. 
+* Netflix has the highest kurtosis. This shows netflix has far more extreme outliers which are potential points for stock gains.
+  
+## Indicators for Analysis
+  
+For furthering our technical analysis, we analyzed four well-know indicators:
+  
+* MACD: Moving average convergence divergence with Standard Moving average calculations.
+* RSI: Relative Strength Index
+* ADX: Average Directional Movement Index
+* ROC: Rate of change
+  
+The first two are technical indicator which measure whether the stock is being overbought or oversold, or in other words whether the stock is overpriced or underpriced. 
+
+The latter two are technical indicators which measure the strength of trends and movements on the stock price, i.e whether the stock will continue rising or falling. 
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#Calculating Indicators for the different stocks
+
+amazon_macd <- MACD(amazon_returns$daily, maType = 'SMA')
+apple_macd <- MACD(apple_returns$daily, maType = 'SMA')
+netflix_macd <- MACD(netflix_returns$daily, maType = 'SMA')
+
+amazon_rsi <- RSI(amazon_returns$daily)
+apple_rsi <- RSI(apple_returns$daily)
+netflix_rsi <- RSI(netflix_returns$daily)
+
+amazon_adx <- ADX(amazon)
+apple_adx <- ADX(apple)
+netflix_adx <- ADX(netflix)
+
+amazon_roc <- ROC(amazon$AMZN.Close, n = 5)
+apple_roc <- ROC(apple$AAPL.Close, n = 5)
+netflix_roc <- ROC(netflix$NFLX.Close, n = 5)
+
+#backtesting functions
+
+backtest <- function(df, rtn.daily, from_date,to_date,strategy,strategy_name){
+  rtn <- rtn.daily[index(rtn.daily)<=to_date & index(rtn.daily)>=from_date] 
+  trade_return <- rtn * stats::lag(strategy, na.pad = FALSE)
+  cumm_return <- Return.cumulative(trade_return)
+  annual_return <- Return.annualized(trade_return) 
+  summary(as.ts(trade_return))
+  SharpeRatio <- SharpeRatio(as.ts(trade_return), Rf = 0, p = 0.95, FUN = "StdDev")
+  SharpeRatioAnnualized <- SharpeRatio.annualized(trade_return, Rf = 0)
+  out <- as.data.frame(c(cumm_return,annual_return,SharpeRatio,SharpeRatioAnnualized))
+  out <- round(out,2)
+  colnames(out) <- strategy_name
+  row.names(out) <- c('Cumulative Return','Annualized Return',
+                      'Sharpe Ratio','Annualized Sharpe Ratio')
+  
+  return( out )
+}
+
+BH_backtest <- function(df, rtn.daily, from_date,to_date,strategy_name){
+  trade_return <- rtn.daily[index(rtn.daily)<=to_date & index(rtn.daily)>=from_date]
+  cumm_return <- Return.cumulative(trade_return)
+  annual_return <- Return.annualized(trade_return) 
+  summary(as.ts(trade_return))
+  SharpeRatio <- SharpeRatio(as.ts(trade_return), Rf = 0, p = 0.95, FUN = "StdDev")
+  SharpeRatioAnnualized <- SharpeRatio.annualized(trade_return, Rf = 0)
+  out <- as.data.frame(c(cumm_return,annual_return,SharpeRatio,SharpeRatioAnnualized))
+  out <- round(out,2)
+  colnames(out) <- strategy_name
+  row.names(out) <- c('Cumulative Return','Annualized Return',
+                      'Sharpe Ratio','Annualized Sharpe Ratio')
+  
+  return( out )
+}
+
+```
+  
+## Analysing Amazon on technical indicators and creating strategies
+  
+  Let's chart these indicators for Amazon and see if there are any potential trends. We look at the graph for 2019, since 2020 has been an exceptional year and anything beyond a year won't be useful for visual analysis.
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#Strategies for Amazon
+options(repr.plot.width = 10, repr.plot.height = 15)
+chartSeries(amazon, subset = "2019", theme = "white",
+            TA = "addVo();addMACD();addRSI();addADX();addROC();
+            addTA(OpCl(amazon), col = 'blue', type = 'h')")
+
+```
+  
+  There are clear inflection points on the graph where the stock price has dipped which can be potential entry points for someone looking to invest in the stock. In addition we can see that there is a trend of inflection in RSI, and MACD being greater than the signal at these points. In most of these points, DX is above 20 as well. 
+  Based on these observations, we identified 4 strategies for trading: 
+  * If MACD greater than signal enter and stay in the market (MACD based)
+  * If stock is overbought, enter and stay in the market (MACD and RSI based)
+  * Attempting to time market based on inflection in RSI (returns and RSI based)
+  * If the directional trend is positive, enter the market and stay. 
+  
+These 4 strategies will be compared agains the buy and hold strategy.
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+# Strategy 1: if macd>signal, enter and stay in the market. 
+# If macd<signal, exit the market.
+s1_amazon <- ifelse ((amazon_macd$signal < amazon_macd$macd) , 1, 0)
+s1_amazon[is.na(s1_amazon)] <-0
+
+# Strategy 2: if overbought, enter and stay in the market.
+s2_amazon <- ifelse ((amazon_macd$signal < amazon_macd$macd) & (amazon_rsi$rsi > 70), 1, 0)
+s2_amazon[is.na(s2_amazon)] <-0
+
+# Strategy 3: Attempting to time the market by tracking change in RSI, enter and stay in the market
+s3_amazon <- ifelse ((amazon_returns$daily > 0 & (amazon_rsi$rsi - stats::lag(amazon_rsi$rsi) > 0)), 1, 0)
+s3_amazon[is.na(s3_amazon)] <-0
+
+#Strategy 4: if any of the directional indicators are going up, enter and stay in the market.
+s4_amazon <- ifelse((amazon_roc > 0 | amazon_adx$ADX > 20), 1, 0)
+s4_amazon[is.na(s4_amazon)] <- 0
+
+# Buy-and-hold: keep it all time. So "1", not "0"
+bh_strategy <- rep(1,dim(amazon_returns)[1])
+
+#Backtesting for performance
+s1_amazon_performance <- backtest(amazon, amazon_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                              s1_amazon, "Strategy 1 for Amazon")
+s2_amazon_performance <- backtest(amazon, amazon_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                  s2_amazon, "Strategy 2 for Amazon")
+s3_amazon_performance <- backtest(amazon, amazon_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                  s3_amazon, "Strategy 3 for Amazon")
+s4_amazon_performance <- backtest(amazon, amazon_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                  s4_amazon, "Strategy 4 for Amazon")
+bh_amazon_performance <- BH_backtest(amazon, amazon_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                                       "Holding Amazon")
+
+amazon_perf <- data.frame(s1 = s1_amazon_performance$`Strategy 1 for Amazon`,
+                          s2 = s2_amazon_performance$`Strategy 2 for Amazon`,
+                          s3 = s3_amazon_performance$`Strategy 3 for Amazon`,
+                          s4 = s4_amazon_performance$`Strategy 4 for Amazon`,
+                          bh = bh_amazon_performance$`Holding Amazon`)
+row.names(amazon_perf) <- c('Cumulative Return','Annualized Return',
+                    'Sharpe Ratio','Annualized Sharpe Ratio')
+amazon_perf
+
+```
+  Entering the market whenever the directional trend seems positive seems to have the best returns amongst the 4 strategies. However, it is still lower than the buy and hold strategy. Our Attempt to time the market has had the best sharpe ration amongst our strategies yet is lower than buy and hold. 
+  
+## Analysing Apple on technical indicators and creating strategies 
+  
+  Analysing Apple in a similar fashion
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#Strategies for Apple
+options(repr.plot.width = 10, repr.plot.height = 15)
+chartSeries(apple, subset = "2019", theme = "white",
+            TA = "addVo();addMACD();addRSI();addADX();addROC();
+            addTA(OpCl(apple), col = 'blue', type = 'h')")
+
+```
+  
+While there are fewer obvious inflection points, we similar trends. Therefore we will use the same strategies.
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+# Strategy 1: if macd>signal, enter and stay in the market. 
+# If macd<signal, exit the market.
+s1_apple <- ifelse ((apple_macd$signal < apple_macd$macd) , 1, 0)
+s1_apple[is.na(s1_apple)] <-0
+
+# Strategy 2: if overbought, enter and stay in the market.
+s2_apple <- ifelse ((apple_macd$signal < apple_macd$macd) & (apple_rsi$rsi > 70), 1, 0)
+s2_apple[is.na(s2_apple)] <-0
+
+# Strategy 3: Attempting to time the market by tracking change in RSI, enter and stay in the market
+s3_apple <- ifelse ((apple_returns$daily > 0 & (apple_rsi$rsi - stats::lag(apple_rsi$rsi) > 0)), 1, 0)
+s3_apple[is.na(s3_apple)] <-0
+
+#Strategy 4: if any of the directional indicators are going up, enter and stay in the market.
+s4_apple <- ifelse((apple_roc > 0 | apple_adx$ADX > 20), 1, 0)
+s4_apple[is.na(s4_apple)] <- 0
+
+# Buy-and-hold: keep it all time. So "1", not "0"
+bh_apple <- rep(1,dim(apple_returns)[1])
+
+#Backtesting for performance
+s1_apple_performance <- backtest(apple, apple_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                  s1_apple, "Strategy 1 for apple")
+s2_apple_performance <- backtest(apple, apple_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                  s2_apple, "Strategy 2 for apple")
+s3_apple_performance <- backtest(apple, apple_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                  s3_apple, "Strategy 3 for apple")
+s4_apple_performance <- backtest(apple, apple_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                  s4_apple, "Strategy 4 for apple")
+bh_apple_performance <- BH_backtest(apple, apple_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                     "Holding apple")
+
+apple_perf <- data.frame(s1 = s1_apple_performance$`Strategy 1 for apple`,
+                          s2 = s2_apple_performance$`Strategy 2 for apple`,
+                          s3 = s3_apple_performance$`Strategy 3 for apple`,
+                          s4 = s4_apple_performance$`Strategy 4 for apple`,
+                          bh = bh_apple_performance$`Holding apple`)
+row.names(apple_perf) <- c('Cumulative Return','Annualized Return',
+                            'Sharpe Ratio','Annualized Sharpe Ratio')
+apple_perf
+```
+  
+  While Apple has performed less impressively in the same period, our strategies have performed similarly. Our market timing strategy has come very close to equally the buy and hold strategy. And is the best strategy on sharpe ratio!
+  
+## Analysing Netflix on technical indicators and creating strategies
+  
+  We will repeat the same analysis and Strategies on Netflix.
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#Strategies for Netflix
+options(repr.plot.width = 10, repr.plot.height = 15)
+chartSeries(netflix, subset = "2019", theme = "white",
+            TA = "addVo();addMACD();addRSI();addADX();addROC();
+            addTA(OpCl(netflix), col = 'blue', type = 'h')")
+
+
+```
+  
+Similar trends exists! We will use the same strategy.
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+# Strategy 1: if macd>signal, enter and stay in the market. 
+# If macd<signal, exit the market.
+s1_netflix <- ifelse ((netflix_macd$signal < netflix_macd$macd) , 1, 0)
+s1_netflix[is.na(s1_netflix)] <-0
+
+# Strategy 2: if overbought, enter and stay in the market.
+s2_netflix <- ifelse ((netflix_macd$signal < netflix_macd$macd) & (netflix_rsi$rsi > 70), 1, 0)
+s2_netflix[is.na(s2_netflix)] <-0
+
+# Strategy 3: Attempting to time the market by tracking change in RSI, enter and stay in the market
+s3_netflix <- ifelse ((netflix_returns$daily > 0 & (netflix_rsi$rsi - stats::lag(netflix_rsi$rsi) > 0)), 1, 0)
+s3_netflix[is.na(s3_netflix)] <-0
+
+#Strategy 4: if any of the directional indicators are going up, enter and stay in the market.
+s4_netflix <- ifelse((netflix_roc > 0 | netflix_adx$ADX > 20), 1, 0)
+s4_netflix[is.na(s4_netflix)] <- 0
+
+# Buy-and-hold: keep it all time. So "1", not "0"
+bh_netflix <- rep(1,dim(netflix_returns)[1])
+
+#Backtesting for performance
+s1_netflix_performance <- backtest(netflix, netflix_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                 s1_netflix, "Strategy 1 for netflix")
+s2_netflix_performance <- backtest(netflix, netflix_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                 s2_netflix, "Strategy 2 for netflix")
+s3_netflix_performance <- backtest(netflix, netflix_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                 s3_netflix, "Strategy 3 for netflix")
+s4_netflix_performance <- backtest(netflix, netflix_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                 s4_netflix, "Strategy 4 for netflix")
+bh_netflix_performance <- BH_backtest(netflix, netflix_returns$daily, from_date = '2015-01-01', to_date = '2019-12-31',
+                                    "Holding netflix")
+
+netflix_perf <- data.frame(s1 = s1_netflix_performance$`Strategy 1 for netflix`,
+                         s2 = s2_netflix_performance$`Strategy 2 for netflix`,
+                         s3 = s3_netflix_performance$`Strategy 3 for netflix`,
+                         s4 = s4_netflix_performance$`Strategy 4 for netflix`,
+                         bh = bh_netflix_performance$`Holding netflix`)
+row.names(netflix_perf) <- c('Cumulative Return','Annualized Return',
+                           'Sharpe Ratio','Annualized Sharpe Ratio')
+netflix_perf
+
+```
+  
+  Curiously, Our market timing strategy has performed pretty badly for netflix. However, directional trading has done remarkably well. However, buy and hold is still the best strategy. 
+  
+## Analysing over different time periods
+  
+  Buy and hold has shown to be the best strategy for long term trading. However, let us test our best strategies against buy and hold for different time periods.
+
+### Returns over 1 month
+    
+```{r error=FALSE, message=FALSE, warning=FALSE}
+s4_amazon_performance_1 <-  backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-02-01', s4_amazon, "Amazon 1 month")
+bh_amazon_performance_1 <- BH_backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-02-01', "Holding amazon for 1 month")
+s3_apple_performance_1 <-  backtest(apple, apple_returns$daily,from_date = '2019-01-01', to_date =
+                                       '2019-02-01', s3_apple, "apple 1 month")
+bh_apple_performance_1 <- BH_backtest(apple, apple_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-02-01', "Holding apple for 1 month")
+s4_netflix_performance_1 <-  backtest(netflix, netflix_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-02-01', s4_netflix, "netflix 1 month")
+bh_netflix_performance_1 <- BH_backtest(netflix, netflix_returns$daily, from_date = '2019-01-01', 
+                                        to_date='2019-02-01', "Holding netflix for 1 month")
+
+month_perf <- data.frame(s4_amazon = s4_amazon_performance_1$`Amazon 1 month`,
+                         bh_amazon = bh_amazon_performance_1$`Holding amazon for 1 month`,
+                         s3_apple = s3_apple_performance_1$`apple 1 month`,
+                         bh_apple = bh_apple_performance_1$`Holding apple for 1 month`,
+                         s4_netflix = s4_netflix_performance_1$`netflix 1 month`,
+                         bh_netflix = bh_netflix_performance_1$`Holding netflix for 1 month`)
+row.names(month_perf) <- c('Cumulative Return','Annualized Return',
+                           'Sharpe Ratio','Annualized Sharpe Ratio')
+month_perf
+
+```
+  
+  Interestingly, over a 1 month period, directional movement strategy seems to perform almost as well as buy and hold. 
+  
+### Returns over 1 quarter
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+s4_amazon_performance_3 <-  backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-05-01', s4_amazon, "Amazon 1 month")
+bh_amazon_performance_3 <- BH_backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-05-01', "Holding amazon for 1 month")
+s3_apple_performance_3 <-  backtest(apple, apple_returns$daily,from_date = '2019-01-01', to_date =
+                                       '2019-05-01', s3_apple, "apple 1 month")
+bh_apple_performance_3 <- BH_backtest(apple, apple_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-05-01', "Holding apple for 1 month")
+s4_netflix_performance_3 <-  backtest(netflix, netflix_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2019-05-01', s4_netflix, "netflix 1 month")
+bh_netflix_performance_3 <- BH_backtest(netflix, netflix_returns$daily, from_date = '2019-01-01', 
+                                        to_date='2019-05-01', "Holding netflix for 1 month")
+
+quarter_perf <- data.frame(s4_amazon = s4_amazon_performance_3$`Amazon 1 month`,
+                         bh_amazon = bh_amazon_performance_3$`Holding amazon for 1 month`,
+                         s3_apple = s3_apple_performance_3$`apple 1 month`,
+                         bh_apple = bh_apple_performance_3$`Holding apple for 1 month`,
+                         s4_netflix = s4_netflix_performance_3$`netflix 1 month`,
+                         bh_netflix = bh_netflix_performance_3$`Holding netflix for 1 month`)
+row.names(quarter_perf) <- c('Cumulative Return','Annualized Return',
+                           'Sharpe Ratio','Annualized Sharpe Ratio')
+quarter_perf
+
+```
+  Over a quarter, buy and hold performs significantly better.
+  
+### Returns over 1 year  
+    
+```{r error=FALSE, message=FALSE, warning=FALSE}
+s4_amazon_performance_12 <-  backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2020-01-01', s4_amazon, "Amazon 1 month")
+bh_amazon_performance_12 <- BH_backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2020-01-01', "Holding amazon for 1 month")
+s3_apple_performance_12 <-  backtest(apple, apple_returns$daily,from_date = '2019-01-01', to_date =
+                                       '2020-01-01', s3_apple, "apple 1 month")
+bh_apple_performance_12 <- BH_backtest(apple, apple_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2020-01-01', "Holding apple for 1 month")
+s4_netflix_performance_12 <-  backtest(netflix, netflix_returns$daily, from_date = '2019-01-01', to_date =
+                                       '2020-01-01', s4_netflix, "netflix 1 month")
+bh_netflix_performance_12 <- BH_backtest(netflix, netflix_returns$daily, from_date = '2019-01-01', 
+                                        to_date='2020-01-01', "Holding netflix for 1 month")
+
+year_perf <- data.frame(s4_amazon = s4_amazon_performance_12$`Amazon 1 month`,
+                         bh_amazon = bh_amazon_performance_12$`Holding amazon for 1 month`,
+                         s3_apple = s3_apple_performance_12$`apple 1 month`,
+                         bh_apple = bh_apple_performance_12$`Holding apple for 1 month`,
+                         s4_netflix = s4_netflix_performance_12$`netflix 1 month`,
+                         bh_netflix = bh_netflix_performance_12$`Holding netflix for 1 month`)
+row.names(year_perf) <- c('Cumulative Return','Annualized Return',
+                           'Sharpe Ratio','Annualized Sharpe Ratio')
+year_perf
+
+```
+  
+  While buy and hold seems to have performed better for Amazon and Apple durng a year, Our strategy has performed better than buy and hold for Netflix. 
+  
+## Attempting to create a machine-learning model
+
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#joining all variables and factors into a single object and creating test and train data
+
+model_amazon <- xts::merge.xts(amazon, amazon_adx, amazon_macd, amazon_returns, amazon_roc, join = "left")
+train_amazon <- model_amazon[index(model_amazon) >= '2010-01-01' & index(model_amazon) <= '2018-12-31']
+test_amazon <- model_amazon[index(model_amazon) >= '2019-01-01' & index(model_amazon) <= '2019-12-31']
+train_amazon[is.na(train_amazon)] <- 0
+test_amazon[is.na(test_amazon)] <- 0
+
+#testing for correlation
+corrplot(cor(train_amazon), method = "square", type = "lower", diag = F)
+
+```
+  
+  Interestingly, there is very little correlation between the next day's open to close with any of the day's factors. However, we are dropping the following variables since there is high correlation:
+  
+  * Prices: High, Low and Close, Close1
+  * Differences: op_cl, lo_hi
+  * Percentages: p_op_cl_3
+  * lags: Lag_cl_2, lag_cl_3
+  * Indicators: DIn
+  * Returns: Daily
+  
+```{r error=FALSE, message=FALSE, warning=FALSE}
+#creating a new column for buy or sell strategy
+#We want to buy today, if prices go up tomorrow. i.e. next_op_cl > 0
+train_amazon$target <- ifelse(train_amazon$next_op_cl > 0, 1, 0)
+test_amazon$target <- ifelse(test_amazon$next_op_cl > 0, 1, 0)
+
+drop_cols <-  c("AMZN.High", "AMZN.Low", "AMZN.Close", "AMZN.Close.1", "op_cl", "lo_hi", "p_op_cl_3",
+                "lag_cl_2", "lag_cl_3", "DIn", "daily", "next_op_cl")
+train_amazon <- train_amazon[, !colnames(train_amazon) %in% drop_cols]
+test_amazon <- test_amazon[, !colnames(test_amazon) %in% drop_cols]
+
+#Using a boosting model
+set.seed(257)
+trControl=trainControl(method="cv",number=10)
+tuneGrid=  expand.grid(n.trees = 100, interaction.depth = c(1,2),
+                       shrinkage = (1:100)*0.001,n.minobsinnode=5)
+garbage <- capture.output(cvBoost <- train(target~.,data=train_amazon,method="gbm", 
+                trControl=trControl, tuneGrid=tuneGrid))
+boostCV = gbm(target~.,data=train_amazon,distribution="gaussian",
+              n.trees=cvBoost$bestTune$n.trees,
+              interaction.depth=cvBoost$bestTune$interaction.depth,
+              shrinkage=cvBoost$bestTune$shrinkage,
+              n.minobsinnode = cvBoost$bestTune$n.minobsinnode)
+predBoostCV = predict(boostCV,test_amazon,n.trees=1000)
+rmseBoostCV = sqrt(mean((predBoostCV-test_amazon$target)^2));
+sprintf("The RMSE in test data for the model is %f", rmseBoostCV)
+
+```
+  
+Let us use a cut_off of 0.5 for calculating investment decisions.
+  
+```{r error=FALSE, warning=FALSE, message=FALSE}
+test_amazon$prediction <- ifelse(predBoostCV > 0.5, 1, 0)
+
+#Model strategy
+sm_amazon <- ifelse ((test_amazon$prediction == 1) , 1, 0)
+sm_amazon[is.na(sm_amazon)] <-0
+
+#Checking Performance
+sm_amazon_perf <- backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date = '2019-12-31',
+                                  sm_amazon, "Model strategy for Amazon")
+bh_amazon_perf <- BH_backtest(amazon, amazon_returns$daily, from_date = '2019-01-01', to_date = '2019-12-31',
+                                                       "Holding Amazon")
+
+amazon_perf2 <- data.frame(Model = sm_amazon_perf$`Model strategy for Amazon`,
+                          BuyHold = bh_amazon_perf$`Holding Amazon`)
+row.names(amazon_perf2) <- c('Cumulative Return','Annualized Return',
+                    'Sharpe Ratio','Annualized Sharpe Ratio')
+amazon_perf2
+
+```   
+  
+  Interestingly, our machine learning model has performed marginally better than buy and hold for a one year period. This is definitely worth further examination.
+
+
+***

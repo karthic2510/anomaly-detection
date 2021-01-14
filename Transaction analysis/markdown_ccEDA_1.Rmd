@@ -1,0 +1,525 @@
+---
+title: "Purchase Data EDA: Executive Summary"
+author: "Karthic Subramanian Velayudhan Pillai"
+date: "9/14/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The given dataset contains information on purchases made through the purchase card programs administered by the state and higher ed institutions. All transactions included in this dataset were online transactions. Through this report, we will summarise the observations and trends within the dataset and create features which can aid in building a model to identify fraudulent transacations, or anomalies! 
+  
+```{r warning=FALSE, error=FALSE, message = F}
+#Loading required libraries and data for analysis
+
+library(DT) #For easy viewing and interaction of dataframes
+library(dplyr) #For data manipulation and wrangling
+library(ggplot2) #For visualizations and comprehensive plotting
+library(plotly) #For interactive and beautiful graphs
+library(gridExtra); library(cowplot); #For better graph grids
+
+ccd <- read.csv("purchase_credit_card.csv")
+str(ccd) #To understand the data
+```
+  
+# Purchase Card data
+
+The data contains **442,458 observations or transactions**. For each transaction, we have **11 different variables** providing information about the transaction:
+
+* **Year.Month**: A variable denoting the year and the month in which the transaction happened.
+* **Agency.Number**: A numeric variable identifying the agency which made the transaction. 
+* **Agency.Name**: The name of the agency which made the transaction. 
+* **Cardholder.Last.Name**: The last name of the individual from the agency who made the transaction.
+* **Cardholder.First.Initial**: The initial of the first name of the individual from the agency who made the transaction.
+* **Description**: A description of the transaction.
+* **Amount**: The value of the transaction.
+* **Vendor**: The name of the merchant where the transaction was made.
+* **Transaction.Date**: Date on which the transaction was made. 
+* **Posted.Date**: Date on which the financial institute posted the transaction. 
+* **Merchant.Category.Code**: The category code to which the vendor belongs. 
+
+***
+
+In the next step, we fix the variable names by changing it to more standard R names. This makes it easier for us to code with the variables. We also fix datatypes for the following columns to enable easier data-wrangling: year_month, agency_number, vendor, MCC were converted into factors and transaction_date, posted_date were converted into PoSIXct date formats.
+  
+```{r warning = FALSE, error=FALSE, message = F}
+
+colnames(ccd) <- c("year_month", "agency_number", "agency_name", "ch_last_name",
+                   "ch_first_initial", "description", 'amount', 'vendor', 
+                   'transaction_date', 'posted_date', 'MCC')
+#fixed colnames into more standard R formats for easier syntax
+
+#Fixing data types
+ccd$year_month <- as.factor(ccd$year_month) #Converting year month into a factor to enable better graphs
+ccd$agency_number <- as.factor(ccd$agency_number) #Converting agency name into a factor to enable better EDA 
+ccd$vendor <- as.factor(ccd$vendor) #Converting vendor into a factor to enable better EDA
+ccd$MCC <- as.factor(ccd$MCC) #Converting MCC into a factor to enable better EDA.
+ccd$transaction_date <- as.Date(ccd$transaction_date, format = "%m/%d/%Y %I:%M:%S %p")
+ccd$posted_date <- as.Date(ccd$posted_date, format = "%m/%d/%Y %I:%M:%S %p")
+#PoSIXct date formats are easier to work with in R
+
+#These changes allow us to identify the following:
+unique(ccd$year_month)
+#The data includes transactions from a 12-month period between July 2013 to June 2014.
+sprintf("Number of unique agencies: %s", length(unique(ccd$agency_number)))
+#116 unique agencies
+sprintf("Number of unique vendors:",length(unique(ccd$vendor)))
+sprintf("Number of unique Merchant Categories:", length(unique(ccd$MCC)))
+#86279 unique vendors who fall into 435 unique categories
+```
+  
+As can be seen the data includes data for a **12-month period between July 2013 to June 2014**. Transactions were made by **116 unique agencies**, across **86279 unique vendors** who fall into **435 unique categories**.
+
+***
+
+# Exploring trends in transaction amounts
+
+Let us look at the trends and patterns in the transaction amounts:
+  
+```{r warning=FALSE, error=FALSE, message = F}
+quantile(ccd$amount, c(0.001, 0.01, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999))
+sprintf("Mean amount is %s", mean(ccd$amount))
+sprintf("Standard deviation is %s", sd(ccd$amount))
+cat("Range:", range(ccd$amount));
+#While the range for transaction amount varies between -42,863 to 1,903,858.4
+#98% of the transactions lie between the much smaller range of -166 to 4,298.568
+#99.8% of the transactions lie between -1,261.482 to 21,925.972
+```
+The transaction amounts vary widely from **-42,863.04 to 1,903,858.37**. However the average transaction amount is only **425 dollars** and the standard deviation is **5267**. This means the upper value is 362 standard deviations away and the lower value is 8 standard deviations away. In addition, negative values are reimbursements for earlier transactions.
+
+When we look at the quantile distributions, we can see that **98.9%** of the transactions have a value between **-166 and 21,916**. In fact, approximately 95% of of the transaction lie between 0 and 6000. Therefore, for most visual examinations we would limit transactions with amounts between 0 and 6000. And for modelling, the transacations with value between -1200 and 22,000 should be included.
+***
+  
+```{r warning=FALSE, error=FALSE, message = F}
+plot1 <- ccd %>% filter(amount > 0 & amount < 1000) %>% 
+  ggplot(aes(x = year_month, y = amount)) + 
+  geom_boxplot(color = 'skyblue') + theme_minimal() + 
+  xlab("Year & Month") + ylab("Transaction Amount") + ggtitle("Distribution in transaction amount across time")
+ggplotly(plot1)
+```
+
+As can be seen, there isn't much variation in the amount per transaction from one month to another.
+
+***
+
+# Exploring trends in the number of transactions
+
+Now let us look at the number of transactions by different variables. Since each variable has a large number of unique entities, a much better comparison would be to look at summary statistics. However, we can examine trends within the top 20%. 
+  
+```{r warning = F, error = F, message = F}
+
+#Histograms for count of transactions by different variables
+plot5 <- ccd %>% group_by(agency_number) %>% mutate(counts = n()) %>%
+  arrange(desc(counts)) %>%  ungroup() %>% 
+  top_frac(0.7) %>% ggplot(aes(x = reorder(agency_name, -counts))) +
+  geom_histogram(stat = 'count', fill = 'skyblue', color = 'skyblue') +
+  theme_minimal() + theme(axis.text.x = element_blank()) + xlab("Agency") +
+  ylab("Number of Transactions") + ggtitle("Number of transaction in top 70% agencies")
+ggplotly(plot5) #Plot to see number of transactions ina agencies (top 20%)
+
+plot6 <- ccd %>% group_by(vendor) %>% mutate(counts = n()) %>% arrange(desc(counts)) %>% 
+  ungroup() %>% top_frac(0.2) %>%  ggplot(aes(x = reorder(vendor, -counts))) +
+  geom_histogram(stat = 'count', fill = 'skyblue', color = 'skyblue') +
+  theme_minimal() + theme(axis.text.x = element_blank()) + xlab("Vendor") +
+  ylab("Number of Transactions") + ggtitle("Number of transaction in top 20% vendors")
+ggplotly(plot6) #Plot to see number of transactions in vendors (top 20%)
+
+plot7 <- ccd %>% group_by(MCC) %>% mutate(counts = n()) %>% 
+  arrange(desc(counts)) %>%  ungroup() %>% 
+  top_frac(0.4) %>% ggplot(aes(x = reorder(MCC, -counts))) +
+  geom_histogram(stat = 'count', fill = 'skyblue', color = 'skyblue') +
+  theme_minimal() + theme(axis.text.x = element_blank()) + xlab("Merchant Category") +
+  ylab("Number of Transactions") + ggtitle("Number of transaction in top 40% merchant categories")
+ggplotly(plot7) #Plot to see number of transactions in merchant categories (top 20%)
+
+plot8 <- ccd %>% ggplot(aes(x = year_month)) +
+  geom_histogram(stat = 'count', color = 'skyblue', fill = "skyblue") +
+  theme_minimal() + xlab("Year & Month") + ylab("Number of Transactions") + 
+  ggtitle("Number of transactions across time")
+ggplotly(plot8) #Plot to see number of transactions in each month
+
+```
+
+Interestingly, **70%** of the transactions in this data have been initiated by **7 agencies**, of which the **top 2** account for **more than 50%** of the transactions by volume. This limits the value we attain from using agency as the most granular unit, however since the cardholder names are not specific enough to differentiate well, we will use agency for this dataset.
+
+However, the transactions are more widely distributed amongst the vendors. There are two different groups, with a small number having greater than twice the number of transactions as the rest of the vendors. This can potentially be used to group vendors into two categories.
+
+The number of transactions are more naturally distributed across the merchant categories. The only dip in the number of transactions occurs in December and January. This is understandable since institutional spending is usually lower during the holidays. 
+
+***
+
+# Creating features for use in modelling
+
+As mentioned before, we will use the agency as the primary unit for each transaction. This means we want to identify transactions patterns for each agency and use that to identify anomalies. Let us begin by looking at summary statistics across agencies.
+  
+```{r warning=F, error=F, message = F}
+#creating summary statistics for each agency
+stat_agency <- ccd %>% group_by(agency_name) %>% 
+  dplyr::summarise(count_agency_all = n(), total_amount_agency_all = sum(amount),
+            avg_amount_agency_all = mean(amount),
+            min_amount_agency_all = min(amount), 
+            max_amount_agency_all = max(amount)) %>% 
+  arrange(desc(total_amount_agency_all)) %>% ungroup()
+summary(stat_agency)
+datatable(stat_agency, width = 300)
+
+#plotting avg_amount vs count for each agency. The bubble size represents total amount.
+plot9 <- stat_agency %>% filter(avg_amount_agency_all < 6000) %>% 
+  ggplot(aes(x = avg_amount_agency_all, y = count_agency_all,
+             size = total_amount_agency_all,
+             fill = agency_name, color = agency_name)) +
+  geom_jitter() + theme_minimal() + 
+  xlab("Average Transaction Amount") + ylab("Number of Transactions") +
+  theme(legend.position = "none")
+ggplotly(plot9)
+```
+
+The number of transactions by each agency ranges from **1 to 115,995** with a mean of **3568 transactions**. Similarly, The avg value of a transaction ranges from 22 to 171,620. However, the mean and median are comparatively low at **1705 and 265**. The highest avg_transaction value is a 11 standard deviations away from the mean. Therefore, for our visual examination,we will limit the average amount value to 6,000. 
+
+As can be seen, Oklahoma State University is an outlier in terms of the number of transactions and total transaction amount as well. From the graph we see that the other agencies are clustered together. 
+  
+```{r warning=FALSE, error=F, message = F}
+#After grouping by agency, we create new variables to identify the last transaction date and the gap between each transaction and the last transaction, as well the lag between two subsequent transactions.
+stat_agency2 <- ccd %>% group_by(agency_name) %>% 
+  arrange(agency_name, transaction_date) %>% 
+  mutate(last_transaction = max(transaction_date)) %>%
+  mutate(gap_transaction = last_transaction - transaction_date) %>% 
+  mutate(lag_transaction = transaction_date - lag(transaction_date)) %>% 
+  arrange(gap_transaction) %>% ungroup()
+datatable(head(stat_agency2), width = 300)
+```
+
+Considering agency as the primary unit, we will use the RFM method (Recency, Frequency and Monetary value) to create features. For all features we create in this category, we will consider three time periods:
+
+* Short term: 1 day (day of last transaction by the agency)
+* Medium term: 1 month(30 days previous to the last transaction by the agency)
+* Long term: 3 months(90 days previous to the last transaction by the agency)
+
+In a real-time system, the transaction being analyzed would be the last transaction by the agency. 
+
+***
+
+## RFM based Features: 
+
+*Count: Number of transactions by each agency in the decided time period
+*Total_amount: Sum of the value across all transactions by each agency in the decided time period
+*Average_amount: Average value of a transaction by each agency in the decided time period
+*Min_amount: Minimum value of a transaction by each agency in the decided time
+*Max_amount: Maximum value of a transaction by each agency in the decided time
+*Avg_lag_tnx: Average lag (in difftime) between two transactions by an agency in the decided time
+*Min_lag_tnx: Minimum lag (in difftime) between two transactions by an agency in the decided time
+
+By using count across 1 day, 1 month and 3 months and all time, we would be able to identify if there is a sudden increase or decrease in the number of transactions. Both can point towards anomalous transactions. Combined with lag between transactions, we can identify anomalous behaviour in number of transactions. Since these are institutional investors, and based on the constant number of transactions each month, we can expect lag to not vary greatly between transactions. 
+
+For the value of each transaction, we are creating 4 factors across 3 time periods. By looking at average, minimum, maximum amount of a transaction we can identify anomalous behavior if a transaction value is too low or too high. 
+
+At this level of aggregation (Agency), we are creating 21 features in total. 
+
+```{r warning=FALSE, error=F, message = F}
+#creating aggregate variables at the agency level and 1 day time period
+stat_agency_day <- stat_agency2 %>% filter(gap_transaction == 0) %>% group_by(agency_name) %>% 
+  dplyr::summarise(count_agency_day = n(),
+            total_amount_agency_day = sum(amount), 
+            average_amount_agency_day = mean(amount),
+            min_amount_agency_day = min(amount),
+            max_amount_agency_day = max(amount),
+            avg_lag_tnx_day = mean(lag_transaction),
+            min_lag_tnx_day = min(lag_transaction)) %>% ungroup()
+
+#creating aggregate vriables at the agency level and 1month
+stat_agency_m <- stat_agency2 %>% filter(gap_transaction < 31) %>% group_by(agency_name) %>% 
+  dplyr::summarise(count_agency_m = n(),
+                   total_amount_agency_m = sum(amount), 
+                   average_amount_agency_m = mean(amount),
+                   min_amount_agency_m = min(amount),
+                   max_amount_agency_m = max(amount),
+                   avg_lag_tnx_m = mean(lag_transaction),
+                   min_lag_tnx_m = min(lag_transaction)) %>% ungroup()
+
+#creating aggregate vriables at the agency level and 3months
+stat_agency_3m <- stat_agency2 %>% filter(gap_transaction < 91) %>% group_by(agency_name) %>% 
+  dplyr::summarise(count_agency_3m = n(),
+                   total_amount_agency_3m = sum(amount), 
+                   average_amount_agency_3m = mean(amount),
+                   min_amount_agency_3m = min(amount),
+                   max_amount_agency_3m = max(amount),
+                   avg_lag_tnx_3m = mean(lag_transaction),
+                   min_lag_tnx_3m = min(lag_transaction)) %>% ungroup()
+
+#Using left_join to tag each agency with the appropriate aggregte variable values
+stat_agency <- left_join(stat_agency, stat_agency_day, by = 'agency_name')
+stat_agency <- left_join(stat_agency, stat_agency_m, by = 'agency_name')
+stat_agency <- left_join(stat_agency, stat_agency_3m, by = 'agency_name')
+datatable(head(stat_agency), width = 300)
+```
+  
+We will create two more levels of aggregation: 
+
+*Transactions at each vendor by each agency
+*Transactions at each merchant category by each agency
+
+By creating the same 28 variables for both these levels of aggregation, we gain further insights into the pattern of purchases for each individual agency-vendor pair and for each individual agency-merchant category pair. 
+
+Using count of transactions across each aggregation level and each time period, allows us to identify anomalous behavior in terms of types of purchases. For example, if there is a sudden increase in purchases at a specific vendor or merchant category. 
+Similarly, we can use amount and lag as well. 
+  
+```{r warning=F, error=F, message = F}
+#Collating data by Agency and merchant(vendor)
+
+#agency x merchant for all time
+stat_agency_merchant <- ccd %>% group_by(agency_name, vendor) %>% 
+  dplyr::summarise(count_merchant_all = n(), total_amount_merchant_all = sum(amount),
+                   avg_amount_merchant_all = mean(amount),
+                   min_amount_merchant_all = min(amount), 
+                   max_amount_merchant_all = max(amount)) %>% 
+  arrange(desc(total_amount_merchant_all)) %>% ungroup()
+
+#Viewing transactions by merchant for Oklahoma State University
+plot11 <- stat_agency_merchant %>% 
+  filter(avg_amount_merchant_all < 6000 
+         & agency_name == "OKLAHOMA STATE UNIVERSITY") %>%
+  ggplot(aes(x = avg_amount_merchant_all, y = count_merchant_all, 
+             size = total_amount_merchant_all, fill = vendor, color = vendor)) + 
+  geom_jitter() + theme_minimal() + xlab("Average Transaction Amount") + 
+  ylab("Number of Transactions") + 
+  ggtitle("Transactions by vendor for Oklahoma State University") + 
+  theme(legend.position = "none")
+ggplotly(plot11)
+
+#agency x merchant mutated variables
+stat_agency_merchant2 <- ccd %>% group_by(agency_name, vendor) %>% 
+  arrange(agency_name, vendor, transaction_date) %>%
+  mutate(last_transaction = max(transaction_date)) %>% 
+  mutate(gap_transaction = (last_transaction - transaction_date)) %>%
+  mutate(lag_transaction = transaction_date - lag(transaction_date)) %>% 
+  arrange(gap_transaction) %>% ungroup()
+str(stat_agency_merchant2)
+
+#agency x merchant at 1 day
+stat_agency_merchant_day <- stat_agency_merchant2 %>% filter(gap_transaction == 0) %>%
+  group_by(agency_name, vendor) %>% 
+  dplyr::summarise(count_agency_merchant_day = n(),
+                   total_amount_agency_merchant_day = sum(amount), 
+                   average_amount_agency_merchant_day = mean(amount),
+                   min_amount_agency_merchant_day = min(amount),
+                   max_amount_agency_merchant_day = max(amount),
+                   avg_lag_tnx_merchant_day = mean(lag_transaction),
+                   min_lag_tnx_merchant_day = min(lag_transaction)) %>% ungroup()
+
+#agency x merchant at 1 month
+stat_agency_merchant_m <- stat_agency_merchant2 %>% filter(gap_transaction < 31) %>%
+  group_by(agency_name, vendor) %>% 
+  dplyr::summarise(count_agency_merchant_m = n(),
+                   total_amount_agency_merchant_m = sum(amount), 
+                   average_amount_agency_merchant_m = mean(amount),
+                   min_amount_agency_merchant_m = min(amount),
+                   max_amount_agency_merchant_m = max(amount),
+                   avg_lag_tnx_merchant_m = mean(lag_transaction),
+                   min_lag_tnx_merchant_m = min(lag_transaction)) %>% ungroup()
+
+#agency x merchant at 3 months
+stat_agency_merchant_3m <- stat_agency_merchant2 %>% filter(gap_transaction < 91) %>%
+  group_by(agency_name, vendor) %>% 
+  dplyr::summarise(count_agency_merchant_3m = n(),
+                   total_amount_agency_merchant_3m = sum(amount), 
+                   average_amount_agency_merchant_3m = mean(amount),
+                   min_amount_agency_merchant_3m = min(amount),
+                   max_amount_agency_merchant_3m = max(amount),
+                   avg_lag_tnx_merchant_3m = mean(lag_transaction),
+                   min_lag_tnx_merchant_3m = min(lag_transaction)) %>% ungroup()
+
+#left joining using agency name and vendor to ensure the right transacations are tagged with the right variable values
+stat_agency_merchant <- left_join(stat_agency_merchant, stat_agency_merchant_day,
+                                  by = c('agency_name' = 'agency_name', 'vendor' = 'vendor'))
+stat_agency_merchant <- left_join(stat_agency_merchant, stat_agency_merchant_m,
+                                  by = c('agency_name', 'vendor'))
+stat_agency_merchant <- left_join(stat_agency_merchant, stat_agency_merchant_3m,
+                                  by = c('agency_name', 'vendor'))
+datatable(head(stat_agency_merchant), width = 300)
+```
+  
+As can be seen from the graph, for Oklahoma State University, most of the transactions are low-value transactions. However, there are a significant number of transactions with higher values but the values don't repeat often.
+
+This observation allows us to create a new ratio which measures the deviation of the transaction amount from the mean. A high deviation could be a marker for fraudulent transaction.
+  
+```{r warning=F, error=F, message = F}
+#Collating data by Agency and merchant category
+
+#agency x merchant category for all time
+stat_agency_mcc <- ccd %>% group_by(agency_name, MCC) %>% 
+  dplyr::summarise(count_mcc_all = n(), total_amount_mcc_all = sum(amount),
+                   avg_amount_mcc_all = mean(amount),
+                   min_amount_mcc_all = min(amount), 
+                   max_amount_mcc_all = max(amount)) %>% 
+  arrange(desc(total_amount_mcc_all)) %>% ungroup()
+
+#viewing transactions by merchant category for oklahoma state university
+plot12 <- stat_agency_mcc %>% filter(avg_amount_mcc_all < 6000
+                                          & agency_name == "OKLAHOMA STATE UNIVERSITY") %>% 
+  ggplot(aes(x = avg_amount_mcc_all, y = count_mcc_all, size = total_amount_mcc_all,
+             fill = MCC, color = MCC)) + geom_jitter() + 
+  theme_minimal() + xlab("Average Transaction Amount") + ylab("Number of Transactions") +
+  ggtitle("Transactions by MCC for Oklahoma State University") + theme(legend.position = "none")
+ggplotly(plot12)
+
+#agency x merchant category variable mutations
+stat_agency_mcc2 <- ccd %>% group_by(agency_name, MCC) %>% 
+  arrange(agency_name, MCC, transaction_date) %>%
+  mutate(last_transaction = max(transaction_date)) %>% 
+  mutate(gap_transaction = (last_transaction - transaction_date)) %>%
+  mutate(lag_transaction = transaction_date - lag(transaction_date)) %>% 
+  arrange(gap_transaction) %>% ungroup()
+str(stat_agency_mcc2)
+
+#agency x merchant category variables for 1 day
+stat_agency_mcc_day <- stat_agency_mcc2 %>% filter(gap_transaction == 0) %>%
+  group_by(agency_name, MCC) %>% 
+  dplyr::summarise(count_agency_mcc_day = n(),
+                   total_amount_agency_mcc_day = sum(amount), 
+                   average_amount_agency_mcc_day = mean(amount),
+                   min_amount_agency_mcc_day = min(amount),
+                   max_amount_agency_mcc_day = max(amount),
+                   avg_lag_tnx_mcc_day = mean(lag_transaction),
+                   min_lag_tnx_mcc_day = min(lag_transaction)) %>% ungroup()
+
+#agency x merchant category variables for 1 month
+stat_agency_mcc_m <- stat_agency_mcc2 %>% filter(gap_transaction < 31) %>%
+  group_by(agency_name, MCC) %>% 
+  dplyr::summarise(count_agency_mcc_m = n(),
+                   total_amount_agency_mcc_m = sum(amount), 
+                   average_amount_agency_mcc_m = mean(amount),
+                   min_amount_agency_mcc_m = min(amount),
+                   max_amount_agency_mcc_m = max(amount),
+                   avg_lag_tnx_mcc_m = mean(lag_transaction),
+                   min_lag_tnx_mcc_m = min(lag_transaction)) %>% ungroup()
+
+#agency x merchant category variables for 3 months
+stat_agency_mcc_3m <- stat_agency_mcc2 %>% filter(gap_transaction < 91) %>%
+  group_by(agency_name, MCC) %>% 
+  dplyr::summarise(count_agency_mcc_3m = n(),
+                   total_amount_agency_mcc_3m = sum(amount), 
+                   average_amount_agency_mcc_3m = mean(amount),
+                   min_amount_agency_mcc_3m = min(amount),
+                   max_amount_agency_mcc_3m = max(amount),
+                   avg_lag_tnx_mcc_3m = mean(lag_transaction),
+                   min_lag_tnx_mcc_3m = min(lag_transaction)) %>% ungroup()
+
+#left joining new variables with transactions by agency name and MCC
+stat_agency_mcc <- left_join(stat_agency_mcc, stat_agency_mcc_day,
+                                  by = c('agency_name' = 'agency_name', 'MCC' = 'MCC'))
+stat_agency_mcc <- left_join(stat_agency_mcc, stat_agency_mcc_m,
+                                  by = c('agency_name', 'MCC'))
+stat_agency_mcc <- left_join(stat_agency_mcc, stat_agency_mcc_3m,
+                                  by = c('agency_name', 'MCC'))
+datatable(head(stat_agency_mcc, n = 25), width = 300)
+```
+  
+To summarize the factors created so far are based on the RFM principles and are aggregated on 3 levels:
+
+* Agency
+* Agency and Merchant
+* Agency and Merchant Category 
+
+And are calculated across three time periods:
+
+* 1 day
+* 1 month
+* 3 months
+
+And include 7 variables each: 
+
+* Count of transactions
+* avg amount per transaction
+* min amount per transaction
+* max amount per transaction
+* total amount across all transactions
+* avg lag between transactions
+* min lag between transactions
+
+This leads into a total of (3 x 3 x 7) 63 variables. Let us combine all variables into a single dataframe with all transactions. 
+  
+```{r warning=F, error=F, message = F}
+ccfactors <- left_join(ccd, stat_agency, by = c('agency_name'))
+ccfactors <- left_join(ccfactors, stat_agency_merchant, by = c("agency_name", "vendor"))
+ccfactors <- left_join(ccfactors, stat_agency_mcc, by = c("agency_name", "MCC"))
+datatable(head(ccfactors), width = 300)
+```
+***
+
+## Deviation Ratios
+
+Now to support the RFM variables created we will create new ratios which measure the deviation from the average for: 
+
+* transaction amount 
+* lag between transactions
+
+Again, we will do this at 3 levels:
+
+* Agency
+* Agency and merchant
+* Agency and merchant category
+
+across 3 time periods:
+
+* 1 day
+* 1 month
+* 3 months
+* All time ( only for transaction amount)
+    
+```{r warning=F, error=F, message = F}
+#Adding lag parameters for ratio calculation
+ccfactors <- ccfactors %>% group_by(agency_name) %>% 
+  arrange(agency_name, transaction_date) %>% 
+  mutate(lag_agency = transaction_date - lag(transaction_date)) %>% ungroup()
+
+ccfactors <- ccfactors %>% group_by(agency_name, vendor) %>% 
+  arrange(agency_name, vendor, transaction_date) %>% 
+  mutate(lag_vendor = transaction_date - lag(transaction_date)) %>% ungroup()
+
+ccfactors <- ccfactors %>% group_by(agency_name, MCC) %>% 
+  arrange(agency_name, MCC, transaction_date) %>% 
+  mutate(lag_mcc = transaction_date - lag(transaction_date)) %>% ungroup()
+
+#Creating ratios
+ccfactors <- ccfactors %>%
+  mutate(
+    dev_tnx_agency_day = (amount/average_amount_agency_day),
+    dev_tnx_agency_merchant_day = (amount/average_amount_agency_merchant_day),
+    dev_tnx_agency_mcc_day = (amount/average_amount_agency_mcc_day),
+    dev_tnx_agency_m = (amount/average_amount_agency_m),
+    dev_tnx_agency_merchant_m = (amount/average_amount_agency_merchant_m),
+    dev_tnx_agency_mcc_m = (amount/average_amount_agency_mcc_m),
+    dev_tnx_agency_3m = (amount/average_amount_agency_3m),
+    dev_tnx_agency_merchant_3m = (amount/average_amount_agency_merchant_3m),
+    dev_tnx_agency_mcc_3m = (amount/average_amount_agency_mcc_3m),
+    dev_tnx_agency_all = (amount/avg_amount_agency_all),
+    dev_tnx_agency_merchant_all = (amount/avg_amount_merchant_all),
+    dev_tnx_agency_mcc_all = (amount/avg_amount_mcc_all),
+    lag_agency_day = (lag_agency/as.numeric(avg_lag_tnx_day)),
+    lag_agency_merchant_day = (lag_vendor/as.numeric(avg_lag_tnx_merchant_day)),
+    lag_agency_mcc_day = (lag_mcc/as.numeric(avg_lag_tnx_mcc_day)),
+    lag_agency_3m = (lag_agency/as.numeric(avg_lag_tnx_3m)),
+    lag_agency_merchant_3m = (lag_vendor/as.numeric(avg_lag_tnx_merchant_3m)),
+    lag_agency_mcc_3m = (lag_mcc/as.numeric(avg_lag_tnx_mcc_3m)),
+  )
+
+datatable(head(ccfactors), width = 300)
+```
+  
+With these variables, we can measure deviation from the average which would help us identify anomalies quickly. 
+
+***
+
+# Summary 
+
+We identified 3 time periods as 1 day, 1 month and 3 months based on the data availability. We identified three levels of aggregations as agency, agency and vendor, and agency and merchant category. We also identified 7 RFM variables across each aggregation and each time period, and 2 deviation variables for each aggregation and time period. 
+
+**This gives us a grand total of 82 variables.** (RFM: 3 * 3 * 7 + dev: 2 * 3 *3 + 1)
+
+We can also explore further variables based on entities (For example, cardholder name and vendor name) and their exposure to fraudulent activities in their network. (For example, Ratio of fraudulent transactions per 1000 for each vendor to fraudulent transaction per 1000 across all vendors).
+
+***
